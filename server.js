@@ -1,33 +1,32 @@
 import express from "express";
 import bodyParser from "body-parser";
 import cors from "cors";
-import mysql from "mysql2";
+import pkg from "pg";
 import bcrypt from "bcryptjs";
 import dotenv from "dotenv";
 dotenv.config();
+
+const { Pool } = pkg;
 
 const app = express();
 app.use(bodyParser.json());
 app.use(cors());
 
-// ✅ Database Connection
-const db = mysql.createConnection({
+// ✅ Database Connection (PostgreSQL)
+const db = new Pool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  port: process.env.DB_PORT,
-  // optional: enable TLS in production depending on provider:
-  // ssl: { rejectUnauthorized: true }
+  port: process.env.DB_PORT || 5432,
+  ssl: {
+    rejectUnauthorized: false, // required for Render Postgres
+  },
 });
 
-
-
-db.connect((err) => {
-  if (err) console.log("❌ DB Connection Failed:", err);
-  else console.log("✅ MySQL Connected");
-});
-
+db.connect()
+  .then(() => console.log("✅ PostgreSQL Connected"))
+  .catch((err) => console.error("❌ DB Connection Failed:", err));
 
 // ✅ User Registration Route
 app.post("/register", async (req, res) => {
@@ -35,43 +34,39 @@ app.post("/register", async (req, res) => {
 
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
-
-    db.query(
-      "INSERT INTO users (username, password) VALUES (?, ?)",
-      [username, hashedPassword],
-      (err, result) => {
-        if (err) {
-          if (err.code === "ER_DUP_ENTRY") {
-            return res
-              .status(409)
-              .json({ success: false, message: "Username already exists" });
-          }
-          return res.status(500).json({ success: false, error: err });
-        }
-        res.json({ success: true, userId: result.insertId });
-      }
+    const result = await db.query(
+      "INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id",
+      [username, hashedPassword]
     );
-  } catch (error) {
-    res.status(500).json({ success: false, error });
+    res.json({ success: true, userId: result.rows[0].id });
+  } catch (err) {
+    if (err.code === "23505") {
+      // PostgreSQL duplicate entry code
+      return res
+        .status(409)
+        .json({ success: false, message: "Username already exists" });
+    }
+    console.error("Registration Error:", err);
+    res.status(500).json({ success: false, error: err });
   }
 });
 
-
 // ✅ User Login Route
-app.post("/login", (req, res) => {
+app.post("/login", async (req, res) => {
   const { username, password } = req.body;
 
-  db.query("SELECT * FROM users WHERE username = ?", [username], async (err, result) => {
-    if (err) {
-        console.error("DB Error:", err);
-      return res.status(500).json({ success: false, error: err });
+  try {
+    const result = await db.query("SELECT * FROM users WHERE username = $1", [
+      username,
+    ]);
+
+    if (result.rows.length === 0) {
+      return res
+        .status(401)
+        .json({ success: false, message: "Username not found" });
     }
 
-    if (result.length === 0) {
-      return res.status(401).json({ success: false, message: "Username not found" });
-    }
-
-    const user = result[0];
+    const user = result.rows[0];
     const isValid = await bcrypt.compare(password, user.password);
 
     if (!isValid) {
@@ -79,60 +74,67 @@ app.post("/login", (req, res) => {
     }
 
     res.json({ success: true, userId: user.id });
-  });
+  } catch (err) {
+    console.error("Login Error:", err);
+    res.status(500).json({ success: false, error: err });
+  }
 });
-
 
 // ✅ Get all tasks for a user
-app.get("/tasks/:userId", (req, res) => {
+app.get("/tasks/:userId", async (req, res) => {
   const { userId } = req.params;
-
-  db.query("SELECT * FROM tasks WHERE user_id = ?", [userId], (err, result) => {
-    if (err) return res.status(500).json({ error: err });
-    res.json(result);
-  });
+  try {
+    const result = await db.query("SELECT * FROM tasks WHERE user_id = $1", [
+      userId,
+    ]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err });
+  }
 });
-
 
 // ✅ Add a new task
-app.post("/tasks", (req, res) => {
+app.post("/tasks", async (req, res) => {
   const { userId, text } = req.body;
-
-  db.query(
-    "INSERT INTO tasks (user_id, text, completed) VALUES (?, ?, false)",
-    [userId, text],
-    (err, result) => {
-      if (err) return res.status(500).json({ error: err });
-      res.json({ id: result.insertId, text, completed: false });
-    }
-  );
+  try {
+    const result = await db.query(
+      "INSERT INTO tasks (user_id, text, completed) VALUES ($1, $2, false) RETURNING id",
+      [userId, text]
+    );
+    res.json({ id: result.rows[0].id, text, completed: false });
+  } catch (err) {
+    res.status(500).json({ error: err });
+  }
 });
-
 
 // ✅ Toggle task completion
-app.put("/tasks/:id", (req, res) => {
+app.put("/tasks/:id", async (req, res) => {
   const { id } = req.params;
   const { completed } = req.body;
-
-  db.query("UPDATE tasks SET completed = ? WHERE id = ?", [completed, id], (err) => {
-    if (err) return res.status(500).json({ error: err });
+  try {
+    await db.query("UPDATE tasks SET completed = $1 WHERE id = $2", [
+      completed,
+      id,
+    ]);
     res.json({ success: true });
-  });
+  } catch (err) {
+    res.status(500).json({ error: err });
+  }
 });
-
 
 // ✅ Delete task
-app.delete("/tasks/:id", (req, res) => {
+app.delete("/tasks/:id", async (req, res) => {
   const { id } = req.params;
-
-  db.query("DELETE FROM tasks WHERE id = ?", [id], (err) => {
-    if (err) return res.status(500).json({ error: err });
+  try {
+    await db.query("DELETE FROM tasks WHERE id = $1", [id]);
     res.json({ success: true });
-  });
+  } catch (err) {
+    res.status(500).json({ error: err });
+  }
 });
 
-
 // ✅ Start server
-app.listen(5000, () => {
-  console.log("🚀 Server is running on port 5000");
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`🚀 Server is running on port ${PORT}`);
 });
