@@ -4,29 +4,34 @@ import cors from "cors";
 import pkg from "pg";
 import bcrypt from "bcryptjs";
 import dotenv from "dotenv";
+
 dotenv.config();
 
 const { Pool } = pkg;
-
 const app = express();
+
 app.use(bodyParser.json());
 app.use(cors());
 
-// ✅ Database Connection (PostgreSQL)
+// ✅ PostgreSQL Database Connection
 const pool = new Pool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   port: process.env.DB_PORT || 5432,
-  ssl: {
-    rejectUnauthorized: false, // required for Render Postgres
-  },
+  ssl: { rejectUnauthorized: false }, // required for Render
 });
 
-pool.connect()
+pool
+  .connect()
   .then(() => console.log("✅ PostgreSQL Connected"))
   .catch((err) => console.error("❌ DB Connection Failed:", err));
+
+// ✅ Root test route (for quick Render check)
+app.get("/", (req, res) => {
+  res.send("✅ Backend is running and connected to PostgreSQL!");
+});
 
 // ✅ User Registration Route
 app.post("/register", async (req, res) => {
@@ -34,14 +39,13 @@ app.post("/register", async (req, res) => {
 
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
-    const result = await db.query(
+    const result = await pool.query(
       "INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id",
       [username, hashedPassword]
     );
     res.json({ success: true, userId: result.rows[0].id });
   } catch (err) {
     if (err.code === "23505") {
-      // PostgreSQL duplicate entry code
       return res
         .status(409)
         .json({ success: false, message: "Username already exists" });
@@ -56,7 +60,7 @@ app.post("/login", async (req, res) => {
   const { username, password } = req.body;
 
   try {
-    const result = await db.query("SELECT * FROM users WHERE username = $1", [
+    const result = await pool.query("SELECT * FROM users WHERE username = $1", [
       username,
     ]);
 
@@ -84,7 +88,7 @@ app.post("/login", async (req, res) => {
 app.get("/tasks/:userId", async (req, res) => {
   const { userId } = req.params;
   try {
-    const result = await db.query("SELECT * FROM tasks WHERE user_id = $1", [
+    const result = await pool.query("SELECT * FROM tasks WHERE user_id = $1", [
       userId,
     ]);
     res.json(result.rows);
@@ -97,7 +101,7 @@ app.get("/tasks/:userId", async (req, res) => {
 app.post("/tasks", async (req, res) => {
   const { userId, text } = req.body;
   try {
-    const result = await db.query(
+    const result = await pool.query(
       "INSERT INTO tasks (user_id, text, completed) VALUES ($1, $2, false) RETURNING id",
       [userId, text]
     );
@@ -112,7 +116,7 @@ app.put("/tasks/:id", async (req, res) => {
   const { id } = req.params;
   const { completed } = req.body;
   try {
-    await db.query("UPDATE tasks SET completed = $1 WHERE id = $2", [
+    await pool.query("UPDATE tasks SET completed = $1 WHERE id = $2", [
       completed,
       id,
     ]);
@@ -126,7 +130,7 @@ app.put("/tasks/:id", async (req, res) => {
 app.delete("/tasks/:id", async (req, res) => {
   const { id } = req.params;
   try {
-    await db.query("DELETE FROM tasks WHERE id = $1", [id]);
+    await pool.query("DELETE FROM tasks WHERE id = $1", [id]);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err });
@@ -135,6 +139,6 @@ app.delete("/tasks/:id", async (req, res) => {
 
 // ✅ Start server
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Server is running on port ${PORT}`);
 });
