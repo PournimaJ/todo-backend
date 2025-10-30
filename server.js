@@ -13,7 +13,7 @@ app.use(bodyParser.json());
 app.use(cors());
 
 // ✅ Database Connection (PostgreSQL)
-const db = new Pool({
+const pool = new Pool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
@@ -24,7 +24,7 @@ const db = new Pool({
   },
 });
 
-db.connect()
+pool.connect()
   .then(() => console.log("✅ PostgreSQL Connected"))
   .catch((err) => console.error("❌ DB Connection Failed:", err));
 
